@@ -1,9 +1,13 @@
 package main.service;
 
 import main.domain.Cargo;
+import main.domain.Customer;
 import main.domain.Shipment;
 
 public class ShipmentService {
+
+    private static final double PRIORITY_THRESHOLD = 2000;
+
     private final PricingService pricingService;
     private final PermissionService permissionService;
     private final ManifestRepository repository;
@@ -18,49 +22,79 @@ public class ShipmentService {
     }
 
     public String validateCalculatePrintSaveAndNotify(Shipment shipment) {
-        if (shipment.getCustomer().isActive()) {
-            if (!shipment.getCustomer().isSuspended()) {
-                if (!shipment.getCargo().isEmpty()) {
-                    double totalWeight = 0;
-                    double totalValue = 0;
-                    boolean hazardous = false;
-                    for (Cargo item : shipment.getCargo()) {
-                        totalWeight += item.getWeight();
-                        totalValue += item.getDeclaredValue();
-                        if (item.isHazardous()) hazardous = true;
-                    }
-                    if (totalWeight > shipment.getShip().getCapacity()) return "ERROR_CAPACITY";
-                    if (hazardous && !permissionService.canCarryHazardous(shipment.getShip())) return "ERROR_PERMISSION";
+        String eligibilityError = validateCustomerEligibility(shipment.getCustomer());
+        if (eligibilityError != null) {
+            return eligibilityError;
+        }
+        if (shipment.getCargo().isEmpty()) {
+            return "ERROR_EMPTY";
+        }
 
-                    double total = pricingService.calculatePrice(
-                            totalWeight, totalValue, hazardous,
-                            shipment.getOrigin().getName(), shipment.getOrigin().getSector(), shipment.getOrigin().getSecurityLevel(),
-                            shipment.getDestination().getName(), shipment.getDestination().getSector(), shipment.getDestination().getSecurityLevel(),
-                            shipment.getCustomer().getLoyaltyYears(), shipment.getCustomer().isActive(), shipment.getCustomer().isSuspended(),
-                            shipment.getDepartureDate());
-                    total += pricingService.calculateInsurance(totalValue, hazardous, shipment.getCustomer());
+        double totalWeight = totalWeight(shipment.getCargo());
+        double totalValue = totalDeclaredValue(shipment.getCargo());
+        boolean hazardous = hasHazardousCargo(shipment.getCargo());
 
-                    shipment.setTotal(total);
-                    shipment.setStatus("READY");
-                    String output;
-                    if (total > 2000) {
-                        output = "PRIORITY | " + shipment.getReference() + " | " + String.format("%.2f", total);
-                        repository.save(shipment);
-                        output += " | " + notificationService.confirmationFor(shipment);
-                    } else {
-                        output = "REGULAR | " + shipment.getReference() + " | " + String.format("%.2f", total);
-                        repository.save(shipment);
-                        output += " | " + notificationService.confirmationFor(shipment);
-                    }
-                    return output;
-                } else {
-                    return "ERROR_EMPTY";
-                }
-            } else {
-                return "ERROR_CUSTOMER";
-            }
-        } else {
+        if (totalWeight > shipment.getShip().getCapacity()) {
+            return "ERROR_CAPACITY";
+        }
+        if (hazardous && !permissionService.canCarryHazardous(shipment.getShip())) {
+            return "ERROR_PERMISSION";
+        }
+
+        double total = calculateTotal(shipment, totalWeight, totalValue, hazardous);
+        shipment.setTotal(total);
+        shipment.setStatus("READY");
+
+        return finalizeShipment(shipment, total);
+    }
+
+    private String validateCustomerEligibility(Customer customer) {
+        if (!customer.isActive() || customer.isSuspended()) {
             return "ERROR_CUSTOMER";
         }
+        return null;
+    }
+
+    private double totalWeight(Iterable<Cargo> cargo) {
+        double total = 0;
+        for (Cargo item : cargo) {
+            total += item.getWeight();
+        }
+        return total;
+    }
+
+    private double totalDeclaredValue(Iterable<Cargo> cargo) {
+        double total = 0;
+        for (Cargo item : cargo) {
+            total += item.getDeclaredValue();
+        }
+        return total;
+    }
+
+    private boolean hasHazardousCargo(Iterable<Cargo> cargo) {
+        for (Cargo item : cargo) {
+            if (item.isHazardous()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private double calculateTotal(Shipment shipment, double totalWeight, double totalValue, boolean hazardous) {
+        double total = pricingService.calculatePrice(
+                totalWeight, totalValue, hazardous,
+                shipment.getOrigin().getName(), shipment.getOrigin().getSector(), shipment.getOrigin().getSecurityLevel(),
+                shipment.getDestination().getName(), shipment.getDestination().getSector(), shipment.getDestination().getSecurityLevel(),
+                shipment.getCustomer().getLoyaltyYears(), shipment.getCustomer().isActive(), shipment.getCustomer().isSuspended(),
+                shipment.getDepartureDate());
+        total += pricingService.calculateInsurance(totalValue, hazardous, shipment.getCustomer());
+        return total;
+    }
+
+    private String finalizeShipment(Shipment shipment, double total) {
+        String category = total > PRIORITY_THRESHOLD ? "PRIORITY" : "REGULAR";
+        repository.save(shipment);
+        String confirmation = notificationService.confirmationFor(shipment);
+        return category + " | " + shipment.getReference() + " | " + String.format("%.2f", total) + " | " + confirmation;
     }
 }
