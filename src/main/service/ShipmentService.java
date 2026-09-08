@@ -83,10 +83,8 @@ public class ShipmentService {
     private double calculateTotal(Shipment shipment, double totalWeight, double totalValue, boolean hazardous) {
         double total = pricingService.calculatePrice(
                 totalWeight, totalValue, hazardous,
-                shipment.getOrigin().getName(), shipment.getOrigin().getSector(), shipment.getOrigin().getSecurityLevel(),
-                shipment.getDestination().getName(), shipment.getDestination().getSector(), shipment.getDestination().getSecurityLevel(),
-                shipment.getCustomer().getLoyaltyYears(), shipment.getCustomer().isActive(), shipment.getCustomer().isSuspended(),
-                shipment.getDepartureDate());
+                shipment.getOrigin(), shipment.getDestination(),
+                shipment.getCustomer(), shipment.getDepartureDate());
         total += pricingService.calculateInsurance(totalValue, hazardous, shipment.getCustomer());
         return total;
     }
